@@ -27,13 +27,13 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ currentTime, duration, onSeek
   return (
     <div className="w-full flex flex-col gap-2 select-none">
       {/* Time Labels */}
-      <div className="flex justify-between text-sm font-bold text-gray-500 px-1">
+      <div className="flex justify-between text-lg font-bold text-gray-500 px-1">
         <span>{formatTime(currentTime)}</span>
         <span>{formatTime(duration)}</span>
       </div>
 
       {/* Slider */}
-      <div className="relative w-full h-8 flex items-center">
+      <div className="relative w-full h-12 flex items-center">
          <input
           type="range"
           min="0"
@@ -44,7 +44,7 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ currentTime, duration, onSeek
           className="progress-slider w-full"
           style={{ 
             background: trackBackground,
-            height: '12px',
+            height: '24px', /* Increased height match CSS */
             borderRadius: '9999px'
           }}
         />

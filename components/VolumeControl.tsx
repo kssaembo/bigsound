@@ -6,11 +6,13 @@ interface VolumeControlProps {
 }
 
 const VolumeControl: React.FC<VolumeControlProps> = ({ volume, onVolumeChange }) => {
-  // Volume usually 0 to 4. Display as percentage.
-  const displayPercentage = Math.round(volume * 100);
+  // Volume usually 0 to 4. 
+  // Requested display: 0% to 200%.
+  // So we multiply volume (0-4) by 50 to get (0-200).
+  const displayPercentage = Math.round(volume * 50);
 
   // Background gradient calculation for the track
-  // Max volume is 4 (400%)
+  // Max volume is 4. The visual percentage for the slider fill is (current / max) * 100
   const percentage = (volume / 4) * 100;
   
   // Adjusted gradient colors: Green (normal) -> Yellow (boost) -> Red (Max)
@@ -27,7 +29,7 @@ const VolumeControl: React.FC<VolumeControlProps> = ({ volume, onVolumeChange })
     <div className="flex flex-col items-center w-full space-y-4 select-none">
       <div className="text-center">
         <h3 className="text-xl font-bold text-gray-700 mb-1">소리 크기</h3>
-        <span className={`text-4xl font-black ${displayPercentage > 100 ? 'text-red-500' : 'text-blue-500'}`}>
+        <span className={`text-5xl font-black ${displayPercentage > 100 ? 'text-red-500' : 'text-blue-500'}`}>
           {displayPercentage}%
         </span>
       </div>

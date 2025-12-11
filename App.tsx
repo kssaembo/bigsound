@@ -5,6 +5,13 @@ import { saveVolume, getSavedVolume } from './services/db';
 import VolumeControl from './components/VolumeControl';
 import ProgressBar from './components/ProgressBar';
 
+// Declare jsmediatags on window
+declare global {
+  interface Window {
+    jsmediatags: any;
+  }
+}
+
 const App: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1.0);
@@ -12,6 +19,7 @@ const App: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [coverArt, setCoverArt] = useState<string | null>(null);
   
   const audioFileRef = useRef<HTMLAudioElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -86,6 +94,28 @@ const App: React.FC = () => {
       setError(null);
       setCurrentTime(0);
       setDuration(0);
+      setCoverArt(null); // Reset art for new file
+
+      // Attempt to read ID3 tags for cover art
+      if (window.jsmediatags) {
+        window.jsmediatags.read(file, {
+          onSuccess: (tag: any) => {
+            const picture = tag.tags.picture;
+            if (picture) {
+              const { data, format } = picture;
+              let base64String = "";
+              for (let i = 0; i < data.length; i++) {
+                base64String += String.fromCharCode(data[i]);
+              }
+              const base64 = `data:${format};base64,${window.btoa(base64String)}`;
+              setCoverArt(base64);
+            }
+          },
+          onError: (error: any) => {
+            console.log("Error reading tags:", error);
+          }
+        });
+      }
       
       // Stop current playback if any
       audioFileRef.current.pause();
@@ -120,14 +150,14 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-yellow-50 flex flex-col items-center p-4 w-full max-w-md md:max-w-4xl landscape:max-w-4xl mx-auto relative overflow-hidden transition-all duration-300">
+    <div className="min-h-screen bg-yellow-50 flex flex-col items-center p-4 md:p-8 w-full mx-auto relative overflow-hidden transition-all duration-300">
       
       {/* Background Decor */}
       <div className="absolute top-[-50px] right-[-50px] w-40 h-40 bg-yellow-300 rounded-full opacity-50 z-0 blur-xl"></div>
       <div className="absolute bottom-[-50px] left-[-50px] w-60 h-60 bg-blue-200 rounded-full opacity-50 z-0 blur-xl"></div>
 
       {/* Header */}
-      <header className="z-10 w-full flex justify-between items-center mb-6 mt-2">
+      <header className="z-10 w-full flex justify-between items-center mb-6 mt-2 max-w-[95%] mx-auto">
         <div className="flex items-center gap-2">
           <div className="bg-orange-500 p-2 rounded-xl shadow-lg">
              <Volume2 className="text-white w-6 h-6" />
@@ -135,20 +165,33 @@ const App: React.FC = () => {
           <h1 className="text-2xl font-black text-gray-800 tracking-tight">슈퍼 음량</h1>
         </div>
         <div className="text-xs bg-white px-3 py-1 rounded-full shadow-sm text-gray-500 font-bold">
-          v1.7
+          v1.9
         </div>
       </header>
 
-      {/* Main Card */}
-      <main className="z-10 w-full bg-white/80 backdrop-blur-sm rounded-[2rem] shadow-xl p-6 border-2 border-white">
+      {/* Main Card - Adjusted for full width in tablet/landscape */}
+      <main className="z-10 w-full md:w-[95%] landscape:w-[95%] max-w-md md:max-w-none landscape:max-w-none bg-white/80 backdrop-blur-sm rounded-[2rem] shadow-xl p-6 border-2 border-white flex-1 flex flex-col justify-center">
         
         {/* Responsive Layout Grid: Stacks on mobile, Side-by-side on tablet/landscape */}
-        <div className="flex flex-col md:flex-row landscape:flex-row gap-6">
+        <div className="flex flex-col md:flex-row landscape:flex-row gap-8 md:gap-12 h-full">
           
           {/* Left Column: File Input & Progress */}
-          <div className="flex-1 flex flex-col gap-6">
+          <div className="flex-1 flex flex-col gap-6 justify-center">
             {/* File Select Area */}
-            <div className="bg-blue-50 p-4 rounded-2xl border-2 border-blue-100 text-center animate-fade-in hover:bg-blue-100 transition-colors flex flex-col justify-center flex-grow">
+            <div 
+              className={`relative overflow-hidden p-6 md:p-10 rounded-3xl border-2 transition-all duration-500 flex flex-col justify-center flex-grow min-h-[200px] ${coverArt ? 'border-transparent' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
+            >
+                {/* Dynamic Background Layer */}
+                {coverArt && (
+                  <>
+                    <div 
+                      className="absolute inset-0 z-0 bg-cover bg-center transition-transform duration-700 hover:scale-105" 
+                      style={{ backgroundImage: `url(${coverArt})` }} 
+                    />
+                    <div className="absolute inset-0 z-0 bg-black/60 backdrop-blur-[2px]" />
+                  </>
+                )}
+
                 <input 
                   type="file" 
                   accept="audio/*" 
@@ -159,17 +202,21 @@ const App: React.FC = () => {
                 />
                 <label 
                   htmlFor="audio-upload"
-                  className="cursor-pointer flex flex-col items-center justify-center gap-3 text-blue-600 font-bold w-full h-full py-4"
+                  className={`relative z-10 cursor-pointer flex flex-col items-center justify-center gap-4 font-bold w-full h-full ${coverArt ? 'text-white' : 'text-blue-600'}`}
                 >
-                  <div className="bg-white p-3 rounded-full shadow-sm text-blue-500">
-                    {fileName ? <Music size={28} /> : <Upload size={28} />}
+                  <div className={`p-5 rounded-full shadow-md transition-colors ${coverArt ? 'bg-white/20 text-white backdrop-blur-md' : 'bg-white text-blue-500'}`}>
+                    {fileName ? <Music size={40} /> : <Upload size={40} />}
                   </div>
-                  <div className="flex flex-col">
-                    <span className="text-lg">{fileName ? "파일 변경하기" : "음악 파일 선택하기"}</span>
+                  <div className="flex flex-col gap-1 items-center">
+                    <span className="text-2xl drop-shadow-md">{fileName ? "파일 변경하기" : "음악 파일 선택하기"}</span>
                     {fileName ? (
-                      <span className="text-xs text-blue-400 mt-1 truncate max-w-[200px] mx-auto">{fileName}</span>
+                      <span className={`text-sm mt-1 truncate max-w-[250px] mx-auto ${coverArt ? 'text-gray-200' : 'text-blue-400'}`}>
+                        {fileName}
+                      </span>
                     ) : (
-                       <span className="text-xs text-blue-400 mt-1 font-medium">지원 형식: MP3, WAV, OGG, M4A, FLAC</span>
+                       <span className={`text-sm mt-1 font-medium ${coverArt ? 'text-gray-300' : 'text-blue-400'}`}>
+                         지원 형식: MP3, WAV, OGG, M4A, FLAC
+                       </span>
                     )}
                   </div>
                 </label>
@@ -184,7 +231,7 @@ const App: React.FC = () => {
 
             {/* Progress Bar - Only Show if File Loaded */}
             {fileName && (
-              <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
                 <ProgressBar 
                   currentTime={currentTime} 
                   duration={duration} 
@@ -197,7 +244,7 @@ const App: React.FC = () => {
           {/* Right Column: Volume & Controls */}
           <div className="flex-1 flex flex-col gap-6 justify-center">
             {/* Volume Control */}
-            <div className="bg-gray-50 rounded-3xl p-6 shadow-inner">
+            <div className="bg-gray-50 rounded-3xl p-8 shadow-inner flex flex-col justify-center">
                <VolumeControl volume={volume} onVolumeChange={handleVolumeChange} />
             </div>
 
@@ -205,7 +252,7 @@ const App: React.FC = () => {
             <button
               onClick={handleTogglePlay}
               disabled={!fileName}
-              className={`w-full py-5 rounded-2xl text-2xl font-black text-white shadow-lg transform transition-transform active:scale-95 flex items-center justify-center gap-3 ${
+              className={`w-full py-8 rounded-3xl text-3xl font-black text-white shadow-lg transform transition-transform active:scale-95 flex items-center justify-center gap-4 ${
                 !fileName 
                   ? 'bg-gray-300 shadow-none cursor-not-allowed'
                   : isPlaying 
@@ -215,12 +262,12 @@ const App: React.FC = () => {
             >
               {isPlaying ? (
                 <>
-                  <Pause size={32} fill="currentColor" />
+                  <Pause size={40} fill="currentColor" />
                   일시정지
                 </>
               ) : (
                 <>
-                  <Play size={32} fill="currentColor" />
+                  <Play size={40} fill="currentColor" />
                   재생
                 </>
               )}
@@ -231,7 +278,7 @@ const App: React.FC = () => {
 
         {/* Error Message */}
         {error && (
-          <div className="mt-6 bg-red-100 text-red-600 p-3 rounded-xl text-center text-sm font-bold border-2 border-red-200 animate-bounce">
+          <div className="mt-6 bg-red-100 text-red-600 p-4 rounded-2xl text-center font-bold border-2 border-red-200 animate-bounce">
             {error}
           </div>
         )}
@@ -239,9 +286,12 @@ const App: React.FC = () => {
       </main>
 
       {/* Footer Info */}
-      <footer className="mt-8 text-center opacity-60">
-        <p className="text-sm text-gray-500">
+      <footer className="mt-6 mb-2 text-center opacity-60">
+        <p className="text-sm text-gray-500 font-bold mb-1">
           오프라인에서도 사용할 수 있어요! 🚀
+        </p>
+        <p className="text-xs text-gray-400">
+          ⓒ 2025. Kwon's class. All rights reserved.
         </p>
       </footer>
     </div>
