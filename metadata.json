@@ -1,0 +1,7 @@
+{
+  "name": "슈퍼 음량 (Super Volume)",
+  "description": "작은 소리를 크게 들려주는 신기한 웹 앱이에요!",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
