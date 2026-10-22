@@ -1,7 +1,5 @@
 {
-  "name": "슈퍼 음량 (Super Volume)",
-  "description": "작은 소리를 크게 들려주는 신기한 웹 앱이에요!",
-  "requestFramePermissions": [
-    "microphone"
-  ]
+  "name": "슈퍼 음량 2.0",
+  "description": "로컬 음원 재생, 최대 4배 게인 증폭, 자동 피크 보호",
+  "requestFramePermissions": []
 }

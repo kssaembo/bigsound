@@ -1,95 +1,83 @@
+import workletUrl from './limiter.worklet.js?worker&url';
+export interface Meter { reductionDb: number; peak: number }
+export type EngineMode = 'ready' | 'limiter' | 'fallback';
+export const clampVolume = (value: number) => Number.isFinite(value) ? Math.min(4, Math.max(0, value)) : 1;
+
 class AudioService {
-  private audioContext: AudioContext | null = null;
-  private gainNode: GainNode | null = null;
-  private analyser: AnalyserNode | null = null;
-  // Compressor removed to allow full, raw amplification
-  private sourceNode: MediaElementAudioSourceNode | null = null;
-  private audioDataArray: Uint8Array | null = null;
-  
-  // Cache to store source nodes for audio elements to prevent "already connected" errors
-  private elementSourceMap = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
+  private context: AudioContext | null = null;
+  private gain: GainNode | null = null;
+  private source: MediaElementAudioSourceNode | null = null;
+  private setup: Promise<void> | null = null;
+  private desiredVolume = 1;
+  private compressor: DynamicsCompressorNode | null = null;
+  mode: EngineMode = 'ready';
+  meter: Meter = { reductionDb: 0, peak: 0 };
 
-  constructor() {
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    if (AudioContextClass) {
-      this.audioContext = new AudioContextClass();
-    }
+  // Called synchronously from a user gesture, before awaiting play().
+  async prepare(element: HTMLAudioElement) {
+    if (!this.context) this.context = new AudioContext();
+    const resume = this.context.resume();
+    if (!this.setup) this.setup = this.createGraph(element).catch(error => { this.setup = null; throw error; });
+    await Promise.all([resume, this.setup]);
+    this.setVolume(this.desiredVolume);
   }
 
-  // Initialize the audio graph (Gain -> Analyser -> Destination)
-  private setupAudioGraph() {
-    if (!this.audioContext) return;
-
-    // Only create nodes if they don't exist
-    if (!this.gainNode) {
-      this.gainNode = this.audioContext.createGain();
-      this.analyser = this.audioContext.createAnalyser();
-
-      // Configure Analyser
-      this.analyser.fftSize = 256;
-      const bufferLength = this.analyser.frequencyBinCount;
-      this.audioDataArray = new Uint8Array(bufferLength);
-
-      // Direct Connection: Gain -> Analyser -> Destination
-      // REMOVED: Compressor/Limiter. 
-      // This allows the signal to exceed 0dBFS. The device's DAC/Speaker will clip the signal,
-      // resulting in distortion but significantly higher perceived loudness (400% amplitude).
-      this.gainNode.connect(this.analyser);
-      this.analyser.connect(this.audioContext.destination);
+  private async createGraph(element: HTMLAudioElement) {
+    const ctx = this.context!;
+    this.gain ??= ctx.createGain();
+    this.gain.gain.value = this.desiredVolume;
+    let protector: AudioNode;
+    try {
+      await ctx.audioWorklet.addModule(workletUrl);
+      const limiter = new AudioWorkletNode(ctx, 'super-volume-limiter', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+        channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
+      });
+      limiter.port.onmessage = (event: MessageEvent<Meter>) => { this.meter = event.data; };
+      protector = limiter;
+      this.mode = 'limiter';
+    } catch (error) {
+      console.warn('AudioWorklet unavailable, using compressor and sample clamp.', error);
+      // Graceful fallback: compressor reduces sustained overload; waveshaper catches overshoots.
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -3;
+      compressor.knee.value = 0;
+      compressor.ratio.value = 20;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.08;
+      this.compressor = compressor;
+      const guard = ctx.createWaveShaper();
+      const ceiling = Math.pow(10, -1 / 20);
+      // Identity within the ceiling; clamp outside. Fallback can distort on transients.
+      guard.curve = Float32Array.from({ length: 8193 }, (_, i) => Math.max(-ceiling, Math.min(ceiling, i / 4096 - 1)));
+      compressor.connect(guard);
+      guard.connect(ctx.destination);
+      protector = compressor;
+      this.mode = 'fallback';
     }
-  }
-
-  async startFile(audioElement: HTMLAudioElement): Promise<void> {
-    if (!this.audioContext) throw new Error("AudioContext not supported");
-
-    if (this.audioContext.state === 'suspended') {
-      await this.audioContext.resume();
-    }
-
-    this.setupAudioGraph();
-
-    // reuse existing source node if we've already created one for this element
-    if (this.elementSourceMap.has(audioElement)) {
-      this.sourceNode = this.elementSourceMap.get(audioElement)!;
-    } else {
-      this.sourceNode = this.audioContext.createMediaElementSource(audioElement);
-      this.elementSourceMap.set(audioElement, this.sourceNode);
-    }
-
-    // Connect source to gain node (re-connecting is safe)
-    if (this.gainNode && this.sourceNode) {
-        // Disconnect first to be safe, though not strictly required if topology is same
-        try { this.sourceNode.disconnect(); } catch (e) {}
-        this.sourceNode.connect(this.gainNode);
-    }
-  }
-
-  stop() {
-    // For file playback, we mainly rely on the element pausing.
-    if (this.audioContext?.state === 'running') {
-       // Optional: suspend context to save battery if needed
-    }
+    this.source ??= ctx.createMediaElementSource(element);
+    this.source.connect(this.gain);
+    this.gain.connect(protector);
+    if (this.mode === 'limiter') protector.connect(ctx.destination);
   }
 
   setVolume(value: number) {
-    if (this.gainNode && this.audioContext) {
-      // Smooth transition to prevent clicking
-      this.gainNode.gain.cancelScheduledValues(this.audioContext.currentTime);
-      this.gainNode.gain.linearRampToValueAtTime(value, this.audioContext.currentTime + 0.1);
+    this.desiredVolume = clampVolume(value);
+    if (!this.gain || !this.context) return;
+    const param = this.gain.gain;
+    const now = this.context.currentTime;
+    if (typeof param.cancelAndHoldAtTime === 'function') param.cancelAndHoldAtTime(now);
+    else {
+      const current = param.value;
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(current, now);
     }
+    param.linearRampToValueAtTime(this.desiredVolume, now + 0.04);
   }
 
-  getAudioData(): Uint8Array {
-    if (this.analyser && this.audioDataArray) {
-      this.analyser.getByteFrequencyData(this.audioDataArray);
-      return this.audioDataArray;
-    }
-    return new Uint8Array(0);
-  }
-
-  getContextState() {
-    return this.audioContext?.state;
+  getMeter(): Meter {
+    if (this.compressor) return { reductionDb: -this.compressor.reduction, peak: 0 };
+    return this.meter;
   }
 }
-
 export const audioService = new AudioService();

@@ -1,301 +1,144 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Music, Volume2, Play, Pause, Upload } from 'lucide-react';
-import { audioService } from './services/audioService';
-import { saveVolume, getSavedVolume } from './services/db';
-import VolumeControl from './components/VolumeControl';
-import ProgressBar from './components/ProgressBar';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AudioLines, Check, FolderOpen, Music2, Pause, Play, Repeat2, RotateCcw, ShieldCheck, Volume2, VolumeX } from 'lucide-react';
+import jsmediatags from 'jsmediatags/dist/jsmediatags.min.js';
+import { audioService, clampVolume, type EngineMode, type Meter } from './services/audioService';
+import { readSettings, writeSettings } from './services/settings';
 
-// Declare jsmediatags on window
-declare global {
-  interface Window {
-    jsmediatags: any;
-  }
-}
+const time = (seconds: number) => Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '0:00';
 
-const App: React.FC = () => {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [volume, setVolume] = useState(1.0);
-  const [error, setError] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string | null>(null);
+export default function App() {
+  const [settings] = useState(readSettings);
+  const [volume, setVolume] = useState(settings.volume);
+  const [repeat, setRepeat] = useState(settings.repeat);
+  const [muted, setMuted] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [artwork, setArtwork] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [coverArt, setCoverArt] = useState<string | null>(null);
-  
-  const audioFileRef = useRef<HTMLAudioElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const volumeSaveTimeoutRef = useRef<number | null>(null);
+  const [position, setPosition] = useState(0);
+  const [error, setError] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const [engine, setEngine] = useState<EngineMode>('ready');
+  const [meter, setMeter] = useState<Meter>({ reductionDb: 0, peak: 0 });
+  const audio = useRef<HTMLAudioElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const fileUrl = useRef<string | null>(null);
+  const generation = useRef(0);
 
-  // Load saved volume on start
+  useEffect(() => { audioService.setVolume(muted ? 0 : volume); }, [volume, muted]);
   useEffect(() => {
-    getSavedVolume().then((savedVol) => {
-      if (savedVol !== null && !isNaN(savedVol)) {
-        // Clamp saved volume to new max 4.0 if it was higher
-        const safeVol = Math.min(savedVol, 4.0);
-        setVolume(safeVol);
-        audioService.setVolume(safeVol);
-      }
+    const timer = window.setTimeout(() => writeSettings({ volume, repeat }), 350);
+    const flush = () => writeSettings({ volume, repeat });
+    window.addEventListener('pagehide', flush);
+    return () => { window.clearTimeout(timer); window.removeEventListener('pagehide', flush); };
+  }, [volume, repeat]);
+  useEffect(() => {
+    if (!playing) { setMeter({ reductionDb: 0, peak: 0 }); return; }
+    const timer = window.setInterval(() => setMeter({ ...audioService.getMeter() }), 100);
+    return () => window.clearInterval(timer);
+  }, [playing]);
+  useEffect(() => () => {
+    generation.current++;
+    if (fileUrl.current) URL.revokeObjectURL(fileUrl.current);
+  }, []);
+
+  const loadFile = useCallback((selected?: File) => {
+    if (!selected || !audio.current) return;
+    const supported = /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|webm|aif|aiff|mp4)$/i.test(selected.name);
+    if (selected.size === 0 || (!selected.type.startsWith('audio/') && !supported)) {
+      setError('비어 있지 않은 음원 파일을 선택해 주세요.'); return;
+    }
+    const token = ++generation.current;
+    const element = audio.current;
+    element.pause();
+    element.removeAttribute('src');
+    element.load();
+    if (fileUrl.current) URL.revokeObjectURL(fileUrl.current);
+    const url = URL.createObjectURL(selected);
+    fileUrl.current = url;
+    element.src = url;
+    element.load();
+    setFile(selected); setArtwork(null); setPosition(0); setDuration(0); setError(''); setBusy(false);
+    jsmediatags.read(selected, {
+      onSuccess: result => {
+        if (generation.current !== token) return;
+        const picture = result.tags.picture;
+        if (!picture || !/^image\/(jpeg|jpg|png|webp|gif)$/i.test(picture.format) || picture.data.length > 5 * 1024 * 1024) return;
+        const reader = new FileReader();
+        reader.onload = () => { if (generation.current === token) setArtwork(String(reader.result)); };
+        reader.readAsDataURL(new Blob([new Uint8Array(picture.data)], { type: picture.format }));
+      }, onError: () => { /* Album art is optional. */ },
     });
   }, []);
 
-  // Update volume logic with debounce for DB save
-  const handleVolumeChange = (newVolume: number) => {
-    if (isNaN(newVolume)) return;
-    
-    setVolume(newVolume);
-    audioService.setVolume(newVolume);
-
-    // Debounce the save operation to prevent UI lag/freezing
-    if (volumeSaveTimeoutRef.current) {
-      window.clearTimeout(volumeSaveTimeoutRef.current);
-    }
-    volumeSaveTimeoutRef.current = window.setTimeout(() => {
-      saveVolume(newVolume);
-    }, 500);
-  };
-
-  // Handle Play/Pause Toggle
-  const handleTogglePlay = async () => {
-    setError(null);
-
-    // Check if file is loaded
-    if (!audioFileRef.current || !audioFileRef.current.src) {
-      setError("먼저 음악 파일을 선택해주세요!");
-      // Trigger file input click for better UX
-      if (fileInputRef.current) fileInputRef.current.click();
-      return;
-    }
-
-    if (isPlaying) {
-      // Pause behavior
-      audioFileRef.current.pause();
-      setIsPlaying(false);
-    } else {
-      // Play behavior
-      try {
-        await audioFileRef.current.play();
-        // Ensure the audio service graph is connected
-        await audioService.startFile(audioFileRef.current);
-        audioService.setVolume(volume); // Re-apply volume just in case
-        setIsPlaying(true);
-      } catch (err: any) {
-        console.error(err);
-        setError("오디오를 재생할 수 없어요. 파일을 확인해주세요.");
-        setIsPlaying(false);
+  const toggle = useCallback(async () => {
+    const element = audio.current;
+    if (!element || !file || busy) return;
+    if (!element.paused) { element.pause(); return; }
+    const token = generation.current;
+    setBusy(true); setError('');
+    try {
+      await audioService.prepare(element);
+      if (generation.current !== token) return;
+      setEngine(audioService.mode);
+      await element.play();
+    } catch {
+      if (generation.current === token) {
+        element.pause();
+        setError('재생할 수 없습니다. 지원하는 음원인지 확인하고 다시 재생해 주세요.');
       }
-    }
-  };
+    } finally { if (generation.current === token) setBusy(false); }
+  }, [file, busy]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file && audioFileRef.current) {
-      const url = URL.createObjectURL(file);
-      audioFileRef.current.src = url;
-      setFileName(file.name);
-      setError(null);
-      setCurrentTime(0);
-      setDuration(0);
-      setCoverArt(null); // Reset art for new file
-
-      // Attempt to read ID3 tags for cover art
-      if (window.jsmediatags) {
-        window.jsmediatags.read(file, {
-          onSuccess: (tag: any) => {
-            const picture = tag.tags.picture;
-            if (picture) {
-              const { data, format } = picture;
-              let base64String = "";
-              for (let i = 0; i < data.length; i++) {
-                base64String += String.fromCharCode(data[i]);
-              }
-              const base64 = `data:${format};base64,${window.btoa(base64String)}`;
-              setCoverArt(base64);
-            }
-          },
-          onError: (error: any) => {
-            console.log("Error reading tags:", error);
-          }
-        });
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.closest('button,input,textarea,select,a,[contenteditable="true"]') || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.code === 'Space') { event.preventDefault(); void toggle(); }
+      if (event.key.toLowerCase() === 'm') setMuted(value => !value);
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        event.preventDefault(); setMuted(false);
+        setVolume(value => clampVolume(value + (event.key === 'ArrowUp' ? 0.1 : -0.1)));
       }
-      
-      // Stop current playback if any
-      audioFileRef.current.pause();
-      setIsPlaying(false);
-    }
-  };
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggle]);
 
-  const handleTimeUpdate = () => {
-    if (audioFileRef.current) {
-      setCurrentTime(audioFileRef.current.currentTime);
-    }
-  };
+  const changeVolume = (value: number) => { setVolume(clampVolume(value)); setMuted(false); };
+  const percentage = Math.round(volume * 100);
+  const reduction = Math.max(0, meter.reductionDb);
 
-  const handleLoadedMetadata = () => {
-    if (audioFileRef.current) {
-      setDuration(audioFileRef.current.duration);
-    }
-  };
-
-  const handleSeek = (time: number) => {
-    if (audioFileRef.current) {
-      // If we are seeking, we update the audio element immediately
-      audioFileRef.current.currentTime = time;
-      setCurrentTime(time);
-    }
-  };
-
-  const handleEnded = () => {
-    setIsPlaying(false);
-    setCurrentTime(0);
-    // Optionally reset seek to 0 visually handled by currentTime
-  };
-
-  return (
-    <div className="min-h-screen bg-yellow-50 flex flex-col items-center p-4 md:p-8 w-full mx-auto relative overflow-hidden transition-all duration-300">
-      
-      {/* Background Decor */}
-      <div className="absolute top-[-50px] right-[-50px] w-40 h-40 bg-yellow-300 rounded-full opacity-50 z-0 blur-xl"></div>
-      <div className="absolute bottom-[-50px] left-[-50px] w-60 h-60 bg-blue-200 rounded-full opacity-50 z-0 blur-xl"></div>
-
-      {/* Header */}
-      <header className="z-10 w-full flex justify-between items-center mb-6 mt-2 max-w-[95%] mx-auto">
-        <div className="flex items-center gap-2">
-          <div className="bg-orange-500 p-2 rounded-xl shadow-lg">
-             <Volume2 className="text-white w-6 h-6" />
+  return <div className="app-shell">
+    <header className="header"><div className="brand"><span className="brand-icon"><AudioLines size={28} /></span><div><h1>슈퍼 음량</h1><span className="eyebrow">SUPER VOLUME</span></div></div><span className="version">새로워진 v2.0</span></header>
+    <main>
+      <div className="intro"><span className="tag"><span /> 작은 소리도 또렷하게</span><h2>듣고 싶은 소리,<br /><em>더 크게.</em></h2><p>음악을 골라 주세요. 최대 4배 증폭과 음질 보호로<br className="desktop-break" /> 작은 음원도 편하게 들을 수 있어요.</p></div>
+      <div className="workspace">
+        <section className="player-card" aria-label="음원 재생">
+          <div className="card-heading"><span className="step">01</span><h3>음원 선택</h3><span className="local-badge"><Check size={13} /> 내 기기에서만 재생</span></div>
+          <div className={`dropzone ${dragging ? 'dragging' : ''} ${artwork ? 'has-art' : ''}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); loadFile(event.dataTransfer.files[0]); }}>
+            {artwork && <img className="cover" src={artwork} alt="" />}
+            <button className="file-button" onClick={() => picker.current?.click()}><span className="file-icon">{file ? <Music2 size={34} /> : <FolderOpen size={34} />}</span><strong>{file ? '다른 음원 선택하기' : '음원 파일 선택하기'}</strong><span>{file ? file.name : '파일을 여기에 끌어 놓아도 돼요'}</span></button>
+            <input aria-label="음원 파일 선택" ref={picker} type="file" accept="audio/*,.m4a,.flac,.opus" hidden onChange={event => { loadFile(event.target.files?.[0]); event.target.value = ''; }} />
           </div>
-          <h1 className="text-2xl font-black text-gray-800 tracking-tight">슈퍼 음량</h1>
-        </div>
-        <div className="text-xs bg-white px-3 py-1 rounded-full shadow-sm text-gray-500 font-bold">
-          v1.9
-        </div>
-      </header>
-
-      {/* Main Card - Adjusted for full width in tablet/landscape */}
-      <main className="z-10 w-full md:w-[95%] landscape:w-[95%] max-w-md md:max-w-none landscape:max-w-none bg-white/80 backdrop-blur-sm rounded-[2rem] shadow-xl p-6 border-2 border-white flex-1 flex flex-col justify-center">
-        
-        {/* Responsive Layout Grid: Stacks on mobile, Side-by-side on tablet/landscape */}
-        <div className="flex flex-col md:flex-row landscape:flex-row gap-8 md:gap-12 h-full">
-          
-          {/* Left Column: File Input & Progress */}
-          <div className="flex-1 flex flex-col gap-6 justify-center">
-            {/* File Select Area */}
-            <div 
-              className={`relative overflow-hidden p-6 md:p-10 rounded-3xl border-2 transition-all duration-500 flex flex-col justify-center flex-grow min-h-[200px] ${coverArt ? 'border-transparent' : 'bg-blue-50 border-blue-100 hover:bg-blue-100'}`}
-            >
-                {/* Dynamic Background Layer */}
-                {coverArt && (
-                  <>
-                    <div 
-                      className="absolute inset-0 z-0 bg-cover bg-center transition-transform duration-700 hover:scale-105" 
-                      style={{ backgroundImage: `url(${coverArt})` }} 
-                    />
-                    <div className="absolute inset-0 z-0 bg-black/60 backdrop-blur-[2px]" />
-                  </>
-                )}
-
-                <input 
-                  type="file" 
-                  accept="audio/*" 
-                  onChange={handleFileChange}
-                  ref={fileInputRef}
-                  className="hidden"
-                  id="audio-upload"
-                />
-                <label 
-                  htmlFor="audio-upload"
-                  className={`relative z-10 cursor-pointer flex flex-col items-center justify-center gap-4 font-bold w-full h-full ${coverArt ? 'text-white' : 'text-blue-600'}`}
-                >
-                  <div className={`p-5 rounded-full shadow-md transition-colors ${coverArt ? 'bg-white/20 text-white backdrop-blur-md' : 'bg-white text-blue-500'}`}>
-                    {fileName ? <Music size={40} /> : <Upload size={40} />}
-                  </div>
-                  <div className="flex flex-col gap-1 items-center">
-                    <span className="text-2xl drop-shadow-md">{fileName ? "파일 변경하기" : "음악 파일 선택하기"}</span>
-                    {fileName ? (
-                      <span className={`text-sm mt-1 truncate max-w-[250px] mx-auto ${coverArt ? 'text-gray-200' : 'text-blue-400'}`}>
-                        {fileName}
-                      </span>
-                    ) : (
-                       <span className={`text-sm mt-1 font-medium ${coverArt ? 'text-gray-300' : 'text-blue-400'}`}>
-                         지원 형식: MP3, WAV, OGG, M4A, FLAC
-                       </span>
-                    )}
-                  </div>
-                </label>
-                <audio 
-                  ref={audioFileRef} 
-                  className="hidden" 
-                  onTimeUpdate={handleTimeUpdate}
-                  onLoadedMetadata={handleLoadedMetadata}
-                  onEnded={handleEnded}
-                />
-            </div>
-
-            {/* Progress Bar - Only Show if File Loaded */}
-            {fileName && (
-              <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-                <ProgressBar 
-                  currentTime={currentTime} 
-                  duration={duration} 
-                  onSeek={handleSeek} 
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Right Column: Volume & Controls */}
-          <div className="flex-1 flex flex-col gap-6 justify-center">
-            {/* Volume Control */}
-            <div className="bg-gray-50 rounded-3xl p-8 shadow-inner flex flex-col justify-center">
-               <VolumeControl volume={volume} onVolumeChange={handleVolumeChange} />
-            </div>
-
-            {/* Play/Pause Button */}
-            <button
-              onClick={handleTogglePlay}
-              disabled={!fileName}
-              className={`w-full py-8 rounded-3xl text-3xl font-black text-white shadow-lg transform transition-transform active:scale-95 flex items-center justify-center gap-4 ${
-                !fileName 
-                  ? 'bg-gray-300 shadow-none cursor-not-allowed'
-                  : isPlaying 
-                    ? 'bg-yellow-400 shadow-yellow-200 hover:bg-yellow-500' 
-                    : 'bg-green-500 shadow-green-200 hover:bg-green-600'
-              }`}
-            >
-              {isPlaying ? (
-                <>
-                  <Pause size={40} fill="currentColor" />
-                  일시정지
-                </>
-              ) : (
-                <>
-                  <Play size={40} fill="currentColor" />
-                  재생
-                </>
-              )}
-            </button>
-          </div>
-
-        </div>
-
-        {/* Error Message */}
-        {error && (
-          <div className="mt-6 bg-red-100 text-red-600 p-4 rounded-2xl text-center font-bold border-2 border-red-200 animate-bounce">
-            {error}
-          </div>
-        )}
-
-      </main>
-
-      {/* Footer Info */}
-      <footer className="mt-6 mb-2 text-center opacity-60">
-        <p className="text-sm text-gray-500 font-bold mb-1">
-          오프라인에서도 사용할 수 있어요! 🚀
-        </p>
-        <p className="text-xs text-gray-400">
-          ⓒ 2025. Kwon's class. All rights reserved.
-        </p>
-      </footer>
-    </div>
-  );
-};
-
-export default App;
+          <p className="formats">MP3 · WAV · M4A · OGG · FLAC <span>기기에서 지원하는 형식</span></p>
+          <div className="timeline"><label className="sr-only" htmlFor="position">재생 위치</label><input id="position" type="range" min={0} max={duration || 1} step={0.1} value={Math.min(position, duration || 0)} disabled={!duration} aria-valuetext={`${time(position)} / ${time(duration)}`} onChange={event => { if (audio.current && duration) { audio.current.currentTime = Number(event.target.value); setPosition(Number(event.target.value)); } }} /><div className="time-labels"><span>{time(position)}</span><span>{time(duration)}</span></div></div>
+          <div className="playback"><button className={`icon-button ${repeat ? 'selected' : ''}`} title="한 곡 반복" aria-label="한 곡 반복" aria-pressed={repeat} onClick={() => setRepeat(value => !value)}><Repeat2 size={21} /></button><button className="play-button" disabled={!file || busy} onClick={() => void toggle()}>{playing ? <Pause size={23} fill="currentColor" /> : <Play size={23} fill="currentColor" />}<span>{busy ? '준비 중…' : playing ? '일시정지' : '재생하기'}</span></button><button className="icon-button" title="처음부터" aria-label="처음부터" disabled={!file} onClick={() => { if (audio.current) { audio.current.currentTime = 0; setPosition(0); } }}><RotateCcw size={20} /></button></div>
+        </section>
+        <section className="volume-card" aria-label="음량 조절">
+          <div className="card-heading"><span className="step">02</span><h3>음량 조절</h3><span className="max-badge">MAX 4×</span></div>
+          <div className="volume-display"><span className="volume-caption">{muted ? '음소거 중' : volume === 0 ? '소리가 꺼져 있어요' : volume > 1 ? '슈퍼 부스트' : '기본 음량'}</span><div className={muted ? 'muted' : ''}><strong>{muted ? 0 : percentage}</strong><span>%</span></div><p>원본 대비 {(muted ? 0 : volume).toFixed(1)}배 <span>·</span> 최대 +12 dB 증폭</p></div>
+          <label className="sr-only" htmlFor="volume">음량, 원본 100%, 최대 400%</label><input className="volume-range" id="volume" type="range" min={0} max={4} step={0.05} value={volume} style={{ '--fill': `${volume / 4 * 100}%` } as React.CSSProperties} onChange={event => changeVolume(Number(event.target.value))} aria-valuetext={`${percentage}%, 원본 대비 ${volume.toFixed(2)}배${muted ? ', 음소거 중' : ''}`} /><div className="range-labels"><span>0%</span><span>200%</span><span>400%</span></div>
+          <div className="presets">{[1, 2, 3, 4].map(value => <button key={value} aria-pressed={!muted && Math.abs(volume - value) < 0.001} className={!muted && Math.abs(volume - value) < 0.001 ? 'active' : ''} onClick={() => changeVolume(value)}>{value === 1 ? '원본' : `${value}배`}</button>)}<button className={`mute-button ${muted ? 'active' : ''}`} title="음소거 (M)" aria-label="음소거" aria-pressed={muted} onClick={() => setMuted(value => !value)}>{muted ? <VolumeX size={19} /> : <Volume2 size={19} />}</button></div>
+          <div className="quality-panel"><div className="quality-title"><ShieldCheck size={20} /><strong>음질 보호</strong><span>{engine === 'ready' ? '재생 시 자동 적용' : engine === 'fallback' ? '호환 모드' : '작동 중'}</span></div><p>{engine === 'fallback' ? '기본 음질 보호를 사용 중입니다. 최신 Chrome·Edge에서 더 정밀하게 보호할 수 있어요.' : '큰 피크를 자동으로 조절해 소리의 찌그러짐을 줄여요.'}</p><div className="meter-row"><span>출력 레벨</span><div className="meter" role="meter" aria-label="출력 레벨" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(1, meter.peak) * 100)}><span style={{ width: `${Math.min(1, meter.peak) * 100}%` }} /></div><span>{engine === 'fallback' ? '—' : `${Math.round(meter.peak * 100)}%`}</span></div><div className="quality-status">{playing && reduction > 0.5 ? `큰 소리 보호 중 · ${reduction.toFixed(1)} dB 조절` : '음원의 크기에 맞춰 필요한 순간만 조절합니다.'}</div></div>
+        </section>
+      </div>
+      {error && <div className="error" role="alert">{error}</div>}
+      <aside className="note"><ShieldCheck size={18} /><p><strong>알아두면 좋아요.</strong> 400%는 음원 신호의 증폭 배율이에요. 이미 큰 음원은 음질 보호가 작동하므로 체감 음량은 파일과 스피커에 따라 달라져요.</p></aside>
+      <p className="shortcuts">SPACE 재생 / 일시정지 <span>·</span> ↑ ↓ 음량 <span>·</span> M 음소거</p>
+    </main>
+    <footer><span>ⓒ {new Date().getFullYear()}. Kwon’s class.</span><span>음원은 서버로 전송되지 않습니다.</span></footer>
+    <audio ref={audio} preload="metadata" loop={repeat} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={() => setPosition(audio.current?.currentTime ?? 0)} onLoadedMetadata={() => { const value = audio.current?.duration ?? 0; setDuration(Number.isFinite(value) ? value : 0); }} onError={() => { if (audio.current?.getAttribute('src')) { setPlaying(false); setError('이 파일을 읽을 수 없습니다. MP3 또는 WAV 파일로 다시 시도해 주세요.'); } }} />
+  </div>;
+}
