@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import { ExternalLink, Link2, MonitorUp, Unplug } from 'lucide-react';
+import { forwardRef, useImperativeHandle, useEffect, useRef, useState } from 'react';
+import { ExternalLink, Link2, MonitorUp, Unplug, X } from 'lucide-react';
 import { audioService } from '../services/audioService';
 import { parseYouTubeLink, tabCaptureSupport, type YouTubeVideo } from '../services/youtube';
 
-interface Props { onCapture: (active: boolean) => void }
+export interface YouTubePanelHandle { deactivate: () => void }
+interface Props { onCapture: (active: boolean) => void; onActivate: () => void; onClose: () => void }
 
-export default function YouTubePanel({ onCapture }: Props) {
+export default forwardRef<YouTubePanelHandle, Props>(function YouTubePanel({ onCapture, onActivate, onClose }, ref) {
   const [url, setUrl] = useState('');
   const [video, setVideo] = useState<YouTubeVideo | null>(null);
   const [external, setExternal] = useState(false);
@@ -27,6 +28,9 @@ export default function YouTubePanel({ onCapture }: Props) {
     if (preview.current) preview.current.srcObject = null;
     setActive(false); setPending(false); setSurfaceLabel(''); onCapture(false);
   };
+
+  const deactivate = () => { stop(); setVideo(null); setExternal(false); setError(''); };
+  useImperativeHandle(ref, () => ({ deactivate }));
 
   useEffect(() => {
     alive.current = true;
@@ -84,25 +88,17 @@ export default function YouTubePanel({ onCapture }: Props) {
 
   return <div className="youtube-panel">
     <form className="youtube-form" onSubmit={event => {
-      event.preventDefault();
-      const parsed = parseYouTubeLink(url);
-      if (!parsed) { setError('올바른 유튜브 영상 링크를 입력해 주세요. watch·youtu.be·Shorts 링크를 지원합니다.'); return; }
-      stop(); setVideo(parsed); setExternal(false); setError('');
-    }}><label htmlFor="youtube-link"><Link2 size={16} /> 유튜브 영상 링크</label><div><input id="youtube-link" type="text" inputMode="url" value={url} placeholder="https://www.youtube.com/watch?v=…" onChange={event => setUrl(event.target.value)} autoComplete="off" maxLength={2048} /><button type="submit">불러오기</button></div></form>
-    {video && !external && <><div className="youtube-frame"><iframe key={video.embedUrl} src={video.embedUrl} title="YouTube 영상 재생" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" /></div><p className="youtube-status">일반 재생 · 아직 슈퍼 증폭이 연결되지 않았어요.</p></>}
-    {!video && <div className="youtube-empty"><Link2 size={32} /><strong>링크로 유튜브를 재생해요</strong><p>영상 링크를 넣고 불러오기를 누르세요.<br />영상은 공식 YouTube 플레이어로 재생됩니다.</p></div>}
-    <div className="capture-guide"><strong>PC에서 유튜브 소리 증폭하기</strong><ol><li>아래 버튼으로 유튜브를 새 탭에서 열고 재생하세요.</li><li>이 화면으로 돌아와 ‘탭 소리 연결’을 누르세요.</li><li>열어 둔 <b>유튜브 탭</b>을 선택하고 <b>탭 오디오 공유</b>를 켜세요.</li></ol><p>공유를 허용한 후 오른쪽 100~400% 조절이 적용됩니다. 이 슈퍼음량 탭은 공유하지 마세요.</p>
-      <div className="capture-actions"><button type="button" disabled={!video || pending || active} onClick={() => {
-        if (!video) return;
-        // Opening the official watch URL avoids capturing this app's own output.
-        window.open(video.watchUrl, '_blank', 'noopener,noreferrer');
-        setExternal(true); setError('');
-      }}><ExternalLink size={15} /> 유튜브 탭 열기</button><button type="button" className="connect-button" disabled={!video || !external || !support.supported || pending || active} onClick={() => void connect()}><MonitorUp size={15} />{pending ? '탭 선택 대기 중…' : '탭 소리 연결'}</button></div>
-      {!support.supported && <p className="unsupported" role="status">{support.reason}</p>}
-    </div>
-    {external && !active && <div className="external-status">유튜브 탭에서 재생한 후 소리를 연결해 주세요.<button type="button" disabled={pending} onClick={() => { stop(); setExternal(false); }}>이 화면에서 일반 재생</button></div>}
-    {active && <div className="capture-active"><strong role="status">탭 소리 증폭 연결됨</strong><span>{surfaceLabel}</span><video ref={preview} muted playsInline autoPlay aria-label="공유 중인 탭 미리보기" /><p>영상·재생 조작은 원래 유튜브 탭에서 해 주세요. 이 화면에서는 음량을 조절합니다.</p><button type="button" onClick={stop}><Unplug size={15} /> 증폭 연결 해제</button></div>}
+      event.preventDefault(); const parsed = parseYouTubeLink(url);
+      if (!parsed) { setError('유튜브 영상 링크를 다시 확인해 주세요.'); return; }
+      stop(); onActivate(); setVideo(parsed); setExternal(false); setError('');
+    }}><label htmlFor="youtube-link"><Link2 size={22} /> 유튜브 링크</label><div><input id="youtube-link" type="text" inputMode="url" value={url} placeholder="링크를 여기에 붙여 넣어요" onChange={event => setUrl(event.target.value)} autoComplete="off" maxLength={2048} /><button type="submit">열기</button></div></form>
+    {video && <div className="youtube-content"><div className="video-heading"><span>{active ? '슈퍼음량 연결 완료!' : '유튜브로 들어요'}</span><button className="icon-button" aria-label="유튜브 닫기" onClick={() => { deactivate(); onClose(); }}><X size={22} /></button></div>
+      {!external && <div className="youtube-frame"><iframe key={video.embedUrl} src={video.embedUrl} title="YouTube 영상 재생" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen referrerPolicy="strict-origin-when-cross-origin" /></div>}
+      {!support.supported ? <p className="unsupported" role="status">{support.reason}</p> : !active && <div className="capture-guide">
+        {!external ? <><p>더 크게 들으려면 PC 탭을 연결해요.</p><button type="button" onClick={() => { window.open(video.watchUrl, '_blank', 'noopener,noreferrer'); setExternal(true); setError(''); }}><ExternalLink size={20} /> 유튜브 탭 열기</button></> : <><ol><li>새로 열린 유튜브 탭에서 재생해요.</li><li>아래 버튼 → 유튜브 탭을 골라요.</li><li>‘탭 오디오 공유’를 켜고 공유해요.</li></ol><button type="button" className="connect-button" disabled={pending} onClick={() => void connect()}><MonitorUp size={20} />{pending ? '탭 선택 대기 중…' : '탭 소리 연결'}</button><button type="button" className="text-button" disabled={pending} onClick={() => { stop(); setExternal(false); }}>이 화면에서 원래 소리로 듣기</button></>}
+      </div>}
+      {active && <div className="capture-active"><strong role="status">탭 소리 증폭 연결됨</strong><span className="surface-label">{surfaceLabel}</span><video ref={preview} muted playsInline autoPlay aria-label="공유 중인 탭 미리보기" /><p>음량은 여기서, 재생은 유튜브 탭에서!</p><button type="button" onClick={stop}><Unplug size={20} /> 증폭 연결 해제</button></div>}
+    </div>}
     {error && <div className="youtube-error" role="alert">{error}</div>}
-    <p className="youtube-footnote">일부 영상은 유튜브의 외부 재생 제한으로 이 화면에서 열리지 않을 수 있어요. 새 탭에서 시청할 수 있습니다. 공유한 영상·소리는 서버로 전송하거나 저장하지 않습니다.</p>
   </div>;
-}
+});
