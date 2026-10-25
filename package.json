@@ -1,6 +1,26 @@
 {
-  "name": "super-volume", "version": "2.0.0", "private": true, "type": "module",
-  "scripts": { "dev": "vite --host 0.0.0.0", "build": "tsc --noEmit && vite build", "preview": "vite preview --host 0.0.0.0", "test": "node --test tests/*.test.mjs" },
-  "dependencies": { "react": "19.2.1", "react-dom": "19.2.1", "lucide-react": "0.556.0", "jsmediatags": "3.9.7" },
-  "devDependencies": { "@types/node": "^22.14.0", "@types/react": "^19.2.0", "@types/react-dom": "^19.2.0", "@vitejs/plugin-react": "^5.0.0", "typescript": "~5.8.2", "vite": "^6.2.0" }
+  "name": "super-volume",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "react": "19.2.1",
+    "react-dom": "19.2.1",
+    "lucide-react": "0.556.0",
+    "jsmediatags": "3.9.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
 }

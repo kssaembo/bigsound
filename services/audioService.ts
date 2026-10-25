@@ -7,6 +7,8 @@ class AudioService {
   private context: AudioContext | null = null;
   private gain: GainNode | null = null;
   private source: MediaElementAudioSourceNode | null = null;
+  private activeSource: AudioNode | null = null;
+  private inputGeneration = 0;
   private setup: Promise<void> | null = null;
   private desiredVolume = 1;
   private compressor: DynamicsCompressorNode | null = null;
@@ -15,14 +17,45 @@ class AudioService {
 
   // Called synchronously from a user gesture, before awaiting play().
   async prepare(element: HTMLAudioElement) {
+    const token = ++this.inputGeneration;
+    await this.ready();
+    if (token !== this.inputGeneration) throw new DOMException('Input changed', 'AbortError');
+    this.source ??= this.context!.createMediaElementSource(element);
+    this.activate(this.source);
+  }
+
+  async prepareStream(stream: MediaStream) {
+    const token = ++this.inputGeneration;
+    await this.ready();
+    if (token !== this.inputGeneration || !stream.getAudioTracks().some(track => track.readyState === 'live')) throw new DOMException('Input changed', 'AbortError');
+    this.activate(this.context!.createMediaStreamSource(stream));
+  }
+
+  disconnectInput() {
+    this.inputGeneration++;
+    this.activeSource?.disconnect();
+    this.activeSource = null;
+    this.meter = { reductionDb: 0, peak: 0 };
+  }
+
+  private activate(source: AudioNode) {
+    this.activeSource?.disconnect();
+    source.connect(this.gain!);
+    this.activeSource = source;
+    this.setVolume(this.desiredVolume);
+  }
+
+  private async ready() {
     if (!this.context) this.context = new AudioContext();
     const resume = this.context.resume();
-    if (!this.setup) this.setup = this.createGraph(element).catch(error => { this.setup = null; throw error; });
+    if (!this.setup) this.setup = this.createGraph().catch(error => { this.setup = null; throw error; });
     await Promise.all([resume, this.setup]);
     this.setVolume(this.desiredVolume);
   }
 
-  private async createGraph(element: HTMLAudioElement) {
+  unlock() { return this.ready(); }
+
+  private async createGraph() {
     const ctx = this.context!;
     this.gain ??= ctx.createGain();
     this.gain.gain.value = this.desiredVolume;
@@ -55,8 +88,6 @@ class AudioService {
       protector = compressor;
       this.mode = 'fallback';
     }
-    this.source ??= ctx.createMediaElementSource(element);
-    this.source.connect(this.gain);
     this.gain.connect(protector);
     if (this.mode === 'limiter') protector.connect(ctx.destination);
   }
